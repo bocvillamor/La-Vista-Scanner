@@ -250,14 +250,14 @@
       direction: 'ENTRY',
       stationId: '',
       stationName: 'Gate',
-      returnUrl: '',
+      openerAvailable: false,
     };
 
     document.addEventListener('DOMContentLoaded', init);
 
     function init() {
       const params = new URLSearchParams(window.location.search);
-      STATE.returnUrl = String(params.get('return') || '').trim();
+      STATE.openerAvailable = Boolean(window.opener);
       STATE.direction = String(params.get('direction') || 'ENTRY').toUpperCase() === 'EXIT'
         ? 'EXIT'
         : 'ENTRY';
@@ -269,8 +269,11 @@
             ? 'Bagobo Gate'
             : 'Gate');
 
-      if (!isAllowedReturnUrl(STATE.returnUrl)) {
-        showMessage('The La Vista return address is missing or invalid.', true);
+      if (!STATE.openerAvailable) {
+        showMessage(
+          'Open this scanner from the La Vista Gate Dashboard so the scan result can be returned securely.',
+          true
+        );
         document.getElementById('startButton').disabled = true;
         return;
       }
@@ -290,15 +293,6 @@
       // Try immediately for the simplest guard workflow. If the browser requires
       // an explicit tap, the large Start camera button remains available.
       window.setTimeout(startCamera, 250);
-    }
-
-    function isAllowedReturnUrl(value) {
-      try {
-        const url = new URL(value);
-        return url.protocol === 'https:' && url.hostname === 'script.google.com';
-      } catch (error) {
-        return false;
-      }
     }
 
     function startCamera() {
@@ -389,29 +383,41 @@
     }
 
     function returnWithQr(qrText) {
-      if (!isAllowedReturnUrl(STATE.returnUrl)) return;
+      if (!window.opener) {
+        showMessage('The La Vista app tab is no longer available. Return to the app and open the scanner again.', true);
+        return;
+      }
 
-      const returnUrl = new URL(STATE.returnUrl);
-      returnUrl.hash = '';
+      STATE.busy = true;
+      stopCamera().catch(function () {});
 
-      const hash = new URLSearchParams();
-      hash.set('lvscan', '1');
-      hash.set('lvdir', STATE.direction);
-      hash.set('lvstation', STATE.stationId);
-      hash.set('lvstationname', STATE.stationName);
-      hash.set('lvqr', String(qrText || '').trim());
+      try {
+        window.opener.postMessage(
+          {
+            type: 'LV_GATE_SCAN_RESULT',
+            qrText: String(qrText || '').trim(),
+            direction: STATE.direction,
+            stationId: STATE.stationId,
+            stationName: STATE.stationName,
+          },
+          '*'
+        );
 
-      // QR data is carried in the URL fragment. The fragment is never sent to
-      // GitHub or Apps Script servers; the La Vista client removes it immediately.
-      window.location.replace(returnUrl.toString() + '#' + hash.toString());
+        showMessage('QR read successfully. Returning to La Vista…', false);
+
+        // Tabs opened by script are normally allowed to close themselves.
+        window.setTimeout(function () {
+          window.close();
+        }, 350);
+      } catch (error) {
+        STATE.busy = false;
+        showMessage('Unable to return the scan to La Vista. Go back to the La Vista tab and try again.', true);
+      }
     }
 
     function returnWithoutScan() {
-      stopCamera().finally(function () {
-        if (isAllowedReturnUrl(STATE.returnUrl)) {
-          window.location.replace(STATE.returnUrl);
-        }
-      });
+      stopCamera().catch(function () {});
+      window.close();
     }
 
     function showMessage(text, isError) {
