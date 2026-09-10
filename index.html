@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>La Vista Gate Scanner</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #10213a;
+      --muted: #627087;
+      --blue: #1477ef;
+      --border: #d7e0eb;
+      --bg: #eef3f9;
+      --entry-bg: #e8f8ed;
+      --entry-border: #a9dfb9;
+      --entry-ink: #15652e;
+      --exit-bg: #fff0f0;
+      --exit-border: #efb8b8;
+      --exit-ink: #9a2424;
+      --error-bg: #fff0ee;
+      --error-ink: #a22a20;
+      --success-bg: #eaf8ef;
+      --success-ink: #176a32;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--ink);
+      background: linear-gradient(145deg, #f5f8fc 0%, #eaf1f8 100%);
+    }
+
+    .app {
+      width: min(760px, 100%);
+      margin: 0 auto;
+      padding: 24px 18px 40px;
+    }
+
+    .eyebrow {
+      color: #086bdc;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      margin-bottom: 8px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 8vw, 52px);
+      line-height: 1.04;
+    }
+
+    .subtitle {
+      margin: 10px 0 22px;
+      color: var(--muted);
+      font-size: 20px;
+    }
+
+    .mode {
+      padding: 22px 24px;
+      border: 1px solid var(--entry-border);
+      border-radius: 20px;
+      background: var(--entry-bg);
+      color: var(--entry-ink);
+      margin-bottom: 20px;
+    }
+
+    .mode.exit {
+      border-color: var(--exit-border);
+      background: var(--exit-bg);
+      color: var(--exit-ink);
+    }
+
+    .mode .label {
+      display: block;
+      font-size: 26px;
+      font-weight: 900;
+      margin-bottom: 8px;
+    }
+
+    .mode .station {
+      display: block;
+      font-size: 24px;
+      font-weight: 800;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: 0 18px 45px rgba(41, 61, 89, 0.10);
+    }
+
+    #reader {
+      width: 100%;
+      min-height: 360px;
+      overflow: hidden;
+      border: 2px dashed #cad5e2;
+      border-radius: 20px;
+      background: #f9fbfd;
+    }
+
+    #reader video {
+      border-radius: 16px;
+    }
+
+    .message {
+      display: none;
+      margin-bottom: 16px;
+      padding: 15px 16px;
+      border-radius: 14px;
+      font-size: 17px;
+      line-height: 1.45;
+    }
+
+    .message.show { display: block; }
+    .message.error { background: var(--error-bg); color: var(--error-ink); }
+    .message.success { background: var(--success-bg); color: var(--success-ink); }
+
+    .actions {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    button,
+    .file-button {
+      width: 100%;
+      min-height: 58px;
+      border-radius: 14px;
+      border: 1px solid #cfd9e6;
+      font: inherit;
+      font-size: 19px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .primary {
+      border-color: var(--blue);
+      background: var(--blue);
+      color: #fff;
+    }
+
+    .secondary {
+      background: #fff;
+      color: var(--ink);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin: 22px 0;
+      color: #768398;
+      font-weight: 700;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #dbe3ec;
+    }
+
+    .file-label {
+      display: block;
+      font-size: 18px;
+      font-weight: 800;
+      margin-bottom: 9px;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      padding: 14px;
+      border: 1px solid #ccd7e3;
+      border-radius: 14px;
+      background: #fff;
+      font-size: 16px;
+    }
+
+    .small-note {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+      margin-top: 14px;
+    }
+
+    @media (max-width: 520px) {
+      .app { padding: 18px 12px 28px; }
+      .card { padding: 14px; border-radius: 20px; }
+      #reader { min-height: 320px; }
+      .mode { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="eyebrow">LA VISTA SECURITY</div>
+    <h1 id="title">Gate Scanner</h1>
+    <p id="subtitle" class="subtitle">Camera terminal</p>
+
+    <div id="message" class="message" role="alert"></div>
+
+    <section id="mode" class="mode">
+      <span id="modeLabel" class="label">ENTRY SCAN</span>
+      <span id="stationLabel" class="station">Gate</span>
+    </section>
+
+    <section class="card">
+      <div id="reader"></div>
+
+      <div class="actions">
+        <button id="startButton" class="primary" type="button">Start camera</button>
+        <button id="stopButton" class="secondary" type="button" disabled>Stop camera</button>
+      </div>
+
+      <div class="divider"><span>or</span></div>
+
+      <label class="file-label" for="imageInput">Scan a saved QR image</label>
+      <input id="imageInput" type="file" accept="image/*">
+
+      <div class="actions">
+        <button id="backButton" class="secondary" type="button">Back to La Vista</button>
+      </div>
+
+      <p class="small-note">
+        This page only reads the QR with your device camera. Validation, gate rules,
+        timestamps, and resident data remain in the La Vista Apps Script backend.
+      </p>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+    const STATE = {
+      scanner: null,
+      busy: false,
+      direction: 'ENTRY',
+      stationId: '',
+      stationName: 'Gate',
+      returnUrl: '',
+    };
+
+    document.addEventListener('DOMContentLoaded', init);
+
+    function init() {
+      const params = new URLSearchParams(window.location.search);
+      STATE.returnUrl = String(params.get('return') || '').trim();
+      STATE.direction = String(params.get('direction') || 'ENTRY').toUpperCase() === 'EXIT'
+        ? 'EXIT'
+        : 'ENTRY';
+      STATE.stationId = String(params.get('station') || '').trim();
+      STATE.stationName = String(params.get('stationName') || '').trim() ||
+        (STATE.stationId === 'STN-MANGYAN-GATE'
+          ? 'Mangyan Gate'
+          : STATE.stationId === 'STN-BAGOBO-GATE'
+            ? 'Bagobo Gate'
+            : 'Gate');
+
+      if (!isAllowedReturnUrl(STATE.returnUrl)) {
+        showMessage('The La Vista return address is missing or invalid.', true);
+        document.getElementById('startButton').disabled = true;
+        return;
+      }
+
+      const isExit = STATE.direction === 'EXIT';
+      document.getElementById('title').textContent = isExit ? 'Exit Scanner' : 'Entry Scanner';
+      document.getElementById('subtitle').textContent = STATE.stationName;
+      document.getElementById('modeLabel').textContent = isExit ? 'EXIT SCAN' : 'ENTRY SCAN';
+      document.getElementById('stationLabel').textContent = STATE.stationName;
+      document.getElementById('mode').classList.toggle('exit', isExit);
+
+      document.getElementById('startButton').addEventListener('click', startCamera);
+      document.getElementById('stopButton').addEventListener('click', stopCamera);
+      document.getElementById('imageInput').addEventListener('change', scanImageFile);
+      document.getElementById('backButton').addEventListener('click', returnWithoutScan);
+
+      // Try immediately for the simplest guard workflow. If the browser requires
+      // an explicit tap, the large Start camera button remains available.
+      window.setTimeout(startCamera, 250);
+    }
+
+    function isAllowedReturnUrl(value) {
+      try {
+        const url = new URL(value);
+        return url.protocol === 'https:' && url.hostname === 'script.google.com';
+      } catch (error) {
+        return false;
+      }
+    }
+
+    function startCamera() {
+      clearMessage();
+      if (STATE.busy || STATE.scanner) return;
+
+      if (typeof Html5Qrcode === 'undefined') {
+        showMessage('The QR scanner library did not load. Check the internet connection and reload this page.', true);
+        return;
+      }
+
+      const startButton = document.getElementById('startButton');
+      const stopButton = document.getElementById('stopButton');
+      startButton.disabled = true;
+      stopButton.disabled = false;
+
+      const scanner = new Html5Qrcode('reader');
+      STATE.scanner = scanner;
+
+      scanner.start(
+        { facingMode: 'environment' },
+        {
+          fps: 12,
+          qrbox: function (viewfinderWidth, viewfinderHeight) {
+            const edge = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.72);
+            return { width: edge, height: edge };
+          },
+          aspectRatio: 1.0,
+        },
+        function (decodedText) {
+          if (STATE.busy) return;
+          STATE.busy = true;
+          showMessage('QR read. Returning to La Vista for validation…', false);
+          stopCamera().finally(function () {
+            returnWithQr(decodedText);
+          });
+        },
+        function () {}
+      ).catch(function (error) {
+        STATE.scanner = null;
+        startButton.disabled = false;
+        stopButton.disabled = true;
+        showMessage(
+          'Unable to open the camera. Tap Start camera and allow camera access when Chrome asks. ' +
+          readableError(error),
+          true
+        );
+      });
+    }
+
+    function stopCamera() {
+      const scanner = STATE.scanner;
+      STATE.scanner = null;
+
+      document.getElementById('startButton').disabled = false;
+      document.getElementById('stopButton').disabled = true;
+
+      if (!scanner) return Promise.resolve();
+
+      return scanner.stop()
+        .catch(function () {})
+        .then(function () {
+          try { scanner.clear(); } catch (error) {}
+        });
+    }
+
+    function scanImageFile(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file || STATE.busy) return;
+
+      clearMessage();
+      STATE.busy = true;
+
+      stopCamera().finally(function () {
+        const scanner = new Html5Qrcode('reader');
+        scanner.scanFile(file, true)
+          .then(function (decodedText) {
+            try { scanner.clear(); } catch (error) {}
+            showMessage('QR read. Returning to La Vista for validation…', false);
+            returnWithQr(decodedText);
+          })
+          .catch(function (error) {
+            STATE.busy = false;
+            try { scanner.clear(); } catch (clearError) {}
+            showMessage('No readable QR code was found in that image. ' + readableError(error), true);
+          });
+      });
+    }
+
+    function returnWithQr(qrText) {
+      if (!isAllowedReturnUrl(STATE.returnUrl)) return;
+
+      const returnUrl = new URL(STATE.returnUrl);
+      returnUrl.hash = '';
+
+      const hash = new URLSearchParams();
+      hash.set('lvscan', '1');
+      hash.set('lvdir', STATE.direction);
+      hash.set('lvstation', STATE.stationId);
+      hash.set('lvstationname', STATE.stationName);
+      hash.set('lvqr', String(qrText || '').trim());
+
+      // QR data is carried in the URL fragment. The fragment is never sent to
+      // GitHub or Apps Script servers; the La Vista client removes it immediately.
+      window.location.replace(returnUrl.toString() + '#' + hash.toString());
+    }
+
+    function returnWithoutScan() {
+      stopCamera().finally(function () {
+        if (isAllowedReturnUrl(STATE.returnUrl)) {
+          window.location.replace(STATE.returnUrl);
+        }
+      });
+    }
+
+    function showMessage(text, isError) {
+      const element = document.getElementById('message');
+      element.textContent = String(text || '');
+      element.className = 'message show ' + (isError ? 'error' : 'success');
+    }
+
+    function clearMessage() {
+      const element = document.getElementById('message');
+      element.textContent = '';
+      element.className = 'message';
+    }
+
+    function readableError(error) {
+      if (!error) return '';
+      if (typeof error === 'string') return error;
+      return String(error.message || error.name || error);
+    }
+  </script>
+</body>
+</html>
