@@ -26,6 +26,8 @@
     }
 
     * { box-sizing: border-box; }
+    [hidden] { display:none !important; }
+    #idVideo, #photoPreview { width:100%; max-height:65vh; object-fit:contain; border-radius:14px; }
 
     body {
       margin: 0;
@@ -219,6 +221,7 @@
     </section>
 
     <section class="card">
+      <div id="scanControls" hidden>
       <div id="reader"></div>
 
       <div class="actions">
@@ -231,212 +234,240 @@
       <label class="file-label" for="imageInput">Scan a saved QR image</label>
       <input id="imageInput" type="file" accept="image/*">
 
+      </div>
+      <section id="photoPanel" hidden>
+        <h2>Take Photo of Driver’s ID</h2>
+        <p id="photoScanLabel"></p>
+        <p>Required for this Event guest. The photo is stored privately for 60 days.</p>
+        <video id="idVideo" playsinline muted hidden></video>
+        <img id="photoPreview" alt="Driver ID photo preview" hidden>
+        <div class="actions">
+          <button id="takePhotoButton" class="primary" type="button">Take Photo of Driver’s ID</button>
+          <button id="capturePhotoButton" class="primary" type="button" hidden>Capture photo</button>
+          <button id="retakePhotoButton" class="secondary" type="button" hidden>Retake photo</button>
+          <button id="uploadPhotoButton" class="primary" type="button" disabled>Save ID photo and complete admission</button>
+        </div>
+      </section>
       <div class="actions">
+        <button id="retryButton" class="primary" type="button" hidden>Retry same request</button>
+        <button id="nextButton" class="primary" type="button" hidden>Scan next guest / QR</button>
         <button id="backButton" class="secondary" type="button">Back to La Vista</button>
       </div>
 
       <p class="small-note">
-        This page only reads the QR with your device camera. Validation, gate rules,
-        timestamps, and resident data remain in the La Vista Apps Script backend.
+        QR validation and admission records remain in La Vista. Event admissions also require a driver ID photo. Closing this page before saving leaves the admission incomplete; reopen it from the dashboard to resume.
       </p>
     </section>
   </main>
 
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script>
-    const STATE = {
-      scanner: null,
-      busy: false,
-      direction: 'ENTRY',
-      stationId: '',
-      stationName: 'Gate',
-      openerAvailable: false,
-    };
-
-    document.addEventListener('DOMContentLoaded', init);
-
+    const STATE = {scanner:null,stream:null,busy:false,phase:'connecting',launchId:'',origin:'',
+      direction:'ENTRY',requestId:'',qrText:'',response:null,photo:null,timeout:null,cooldown:null};
+    document.addEventListener('DOMContentLoaded',init);
     function init() {
-      const params = new URLSearchParams(window.location.search);
-      STATE.openerAvailable = Boolean(window.opener);
-      STATE.direction = String(params.get('direction') || 'ENTRY').toUpperCase() === 'EXIT'
-        ? 'EXIT'
-        : 'ENTRY';
-      STATE.stationId = String(params.get('station') || '').trim();
-      STATE.stationName = String(params.get('stationName') || '').trim() ||
-        (STATE.stationId === 'STN-MANGYAN-GATE'
-          ? 'Mangyan Gate'
-          : STATE.stationId === 'STN-BAGOBO-GATE'
-            ? 'Bagobo Gate'
-            : 'Gate');
-
-      if (!STATE.openerAvailable) {
-        showMessage(
-          'Open this scanner from the La Vista Gate Dashboard so the scan result can be returned securely.',
-          true
-        );
-        document.getElementById('startButton').disabled = true;
-        return;
+      const params = new URLSearchParams(location.hash.slice(1));
+      STATE.origin = params.get('openerOrigin') || '';
+      STATE.launchId = params.get('launchId') || '';
+      if (!window.opener || !/^https:\/\/(?:script\.google\.com|(?:[a-z0-9-]+\.)?script\.googleusercontent\.com|[a-z0-9-]+-script\.googleusercontent\.com)$/.test(STATE.origin) || !/^[a-f0-9]{48}$/.test(STATE.launchId)) {
+        showMessage('Open this scanner from the updated La Vista dashboard.',true); return;
       }
-
-      const isExit = STATE.direction === 'EXIT';
-      document.getElementById('title').textContent = isExit ? 'Exit Scanner' : 'Entry Scanner';
-      document.getElementById('subtitle').textContent = STATE.stationName;
-      document.getElementById('modeLabel').textContent = isExit ? 'EXIT SCAN' : 'ENTRY SCAN';
-      document.getElementById('stationLabel').textContent = STATE.stationName;
-      document.getElementById('mode').classList.toggle('exit', isExit);
-
-      document.getElementById('startButton').addEventListener('click', startCamera);
-      document.getElementById('stopButton').addEventListener('click', stopCamera);
-      document.getElementById('imageInput').addEventListener('change', scanImageFile);
-      document.getElementById('backButton').addEventListener('click', returnWithoutScan);
-
-      // Try immediately for the simplest guard workflow. If the browser requires
-      // an explicit tap, the large Start camera button remains available.
-      window.setTimeout(startCamera, 250);
+      // Remove launch metadata from visible history; never persist QR/ID photos.
+      history.replaceState(null,'',location.pathname + location.search);
+      window.addEventListener('message',receive);
+      window.addEventListener('pagehide',stopAll);
+      document.getElementById('startButton').onclick = startCamera;
+      document.getElementById('stopButton').onclick = stopCamera;
+      document.getElementById('imageInput').onchange = scanImageFile;
+      document.getElementById('backButton').onclick = function () { stopAll(); window.close(); };
+      document.getElementById('takePhotoButton').onclick = startIdCamera;
+      document.getElementById('capturePhotoButton').onclick = captureIdPhoto;
+      document.getElementById('retakePhotoButton').onclick = function () { if (STATE.busy) return; STATE.photo=null; startIdCamera(); };
+      document.getElementById('uploadPhotoButton').onclick = uploadPhoto;
+      document.getElementById('retryButton').onclick = retry;
+      document.getElementById('nextButton').onclick = function () {
+        if (STATE.phase !== 'complete') return;
+        STATE.phase='connecting'; send('LV_NEXT',{});
+      };
+      send('LV_READY',{});
+      showMessage('Connecting to La Vista…',false);
     }
-
+    function send(type,extra) {
+      if (!window.opener) { showMessage('La Vista tab is unavailable. Reopen from the dashboard.',true); return; }
+      window.opener.postMessage(Object.assign({type:type,launchId:STATE.launchId},extra),STATE.origin);
+    }
+    function receive(event) {
+      if (event.source !== window.opener || event.origin !== STATE.origin) return;
+      const d=event.data || {};
+      if (d.launchId !== STATE.launchId) return;
+      if (d.type === 'LV_CANCEL') {
+        stopAll(); STATE.phase='closed'; STATE.photo=null;
+        document.getElementById('photoPreview').removeAttribute('src');
+        document.getElementById('photoPanel').hidden=true;
+        document.getElementById('scanControls').hidden=true;
+        document.getElementById('nextButton').hidden=true;
+        document.getElementById('retryButton').hidden=true;
+        showMessage('La Vista session/view changed. Reopen the scanner from the dashboard.',true); return;
+      }
+      if (d.type === 'LV_INIT_ERROR') { showMessage(d.message,true); return; }
+      if (d.type === 'LV_INIT') {
+        STATE.direction=d.direction;
+        document.getElementById('title').textContent=d.direction==='EXIT'?'Exit Scanner':'Entry Scanner';
+        document.getElementById('stationLabel').textContent=d.stationName;
+        document.getElementById('subtitle').textContent=d.liveAdmin?'Super Admin — LIVE admissions':d.stationName;
+        document.getElementById('modeLabel').textContent=d.direction + ' SCAN';
+        document.getElementById('mode').classList.toggle('exit',d.direction==='EXIT');
+        ready(); return;
+      }
+      if (d.type === 'LV_NEXT_READY') { ready(); return; }
+      if (d.type === 'LV_TRANSPORT_ERROR') {
+        clearTimeout(STATE.timeout); STATE.busy=false;
+        document.getElementById('retryButton').hidden=false;
+        showMessage(d.message || 'Result not confirmed. Retry the same request.',true); return;
+      }
+      if (d.type !== 'LV_RESPONSE') return;
+      clearTimeout(STATE.timeout); STATE.busy=false;
+      const r=d.response || {};
+      STATE.response=r;
+      document.getElementById('retryButton').hidden=true;
+      document.getElementById('scanControls').hidden=true;
+      stopCamera();
+      if (r.photoRequired) {
+        STATE.phase='photo';
+        document.getElementById('photoPanel').hidden=false;
+        document.getElementById('photoScanLabel').textContent='Event admission reference: ' + r.scanId;
+        document.getElementById('nextButton').hidden=true;
+        document.getElementById('uploadPhotoButton').disabled=!STATE.photo;
+        showMessage(r.message,false); return;
+      }
+      stopAll(); STATE.photo=null;
+      document.getElementById('photoPreview').removeAttribute('src');
+      document.getElementById('photoPanel').hidden=true;
+      STATE.phase=r.code==='REVIEW_REQUIRED'?'review':'complete';
+      showMessage(r.message,r.result!=='success');
+      const next=document.getElementById('nextButton');
+      next.hidden=STATE.phase!=='complete';
+      let until=r.result==='success' ? new Date(r.repeatUntil || 0).getTime() : Date.now() + Number(r.retryAfterMs || 0);
+      clearInterval(STATE.cooldown);
+      function tick() {
+        const seconds=Math.max(0,Math.ceil((until-Date.now())/1000));
+        next.disabled=seconds>0;
+        next.textContent=seconds?'Next scan in ' + seconds + 's':'Scan next guest / QR';
+        if (!seconds) clearInterval(STATE.cooldown);
+      }
+      STATE.cooldown=setInterval(tick,250); tick();
+    }
+    function ready() {
+      STATE.phase='ready'; STATE.busy=false; STATE.requestId=''; STATE.qrText=''; STATE.response=null; STATE.photo=null;
+      document.getElementById('scanControls').hidden=false;
+      document.getElementById('photoPanel').hidden=true;
+      document.getElementById('capturePhotoButton').hidden=true;
+      document.getElementById('retakePhotoButton').hidden=true;
+      document.getElementById('photoPreview').hidden=true;
+      document.getElementById('photoPreview').removeAttribute('src');
+      document.getElementById('nextButton').hidden=true;
+      document.getElementById('retryButton').hidden=true;
+      document.getElementById('startButton').disabled=false;
+      document.getElementById('imageInput').value='';
+      showMessage('Ready. Tap Start camera or choose a QR image.',false);
+    }
+    function requestId() { return Array.from(crypto.getRandomValues(new Uint8Array(24))).map(b=>b.toString(16).padStart(2,'0')).join(''); }
     function startCamera() {
-      clearMessage();
-      if (STATE.busy || STATE.scanner) return;
-
-      if (typeof Html5Qrcode === 'undefined') {
-        showMessage('The QR scanner library did not load. Check the internet connection and reload this page.', true);
-        return;
-      }
-
-      const startButton = document.getElementById('startButton');
-      const stopButton = document.getElementById('stopButton');
-      startButton.disabled = true;
-      stopButton.disabled = false;
-
-      const scanner = new Html5Qrcode('reader');
-      STATE.scanner = scanner;
-
-      scanner.start(
-        { facingMode: 'environment' },
-        {
-          fps: 12,
-          qrbox: function (viewfinderWidth, viewfinderHeight) {
-            const edge = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.72);
-            return { width: edge, height: edge };
-          },
-          aspectRatio: 1.0,
-        },
-        function (decodedText) {
-          if (STATE.busy) return;
-          STATE.busy = true;
-          showMessage('QR read. Returning to La Vista for validation…', false);
-          stopCamera().finally(function () {
-            returnWithQr(decodedText);
-          });
-        },
-        function () {}
-      ).catch(function (error) {
-        STATE.scanner = null;
-        startButton.disabled = false;
-        stopButton.disabled = true;
-        showMessage(
-          'Unable to open the camera. Tap Start camera and allow camera access when Chrome asks. ' +
-          readableError(error),
-          true
-        );
+      if (STATE.phase!=='ready' || STATE.busy || STATE.scanner) return;
+      if (typeof Html5Qrcode==='undefined') { showMessage('QR library did not load. Check your connection.',true); return; }
+      const scanner=new Html5Qrcode('reader'); STATE.scanner=scanner;
+      document.getElementById('startButton').disabled=true;
+      document.getElementById('stopButton').disabled=false;
+      scanner.start({facingMode:'environment'},{fps:12,qrbox:(w,h)=>({width:Math.floor(Math.min(w,h)*.72),height:Math.floor(Math.min(w,h)*.72)})},function (text) {
+        if (STATE.busy || STATE.phase!=='ready') return;
+        STATE.busy=true;
+        stopCamera().then(()=>submitQr(text));
+      },function(){}).catch(function(error) {
+        STATE.scanner=null; document.getElementById('startButton').disabled=false;
+        document.getElementById('stopButton').disabled=true; showMessage('Camera unavailable. Allow camera access or scan a saved QR image. ' + readableError(error),true);
       });
     }
-
     function stopCamera() {
-      const scanner = STATE.scanner;
-      STATE.scanner = null;
-
-      document.getElementById('startButton').disabled = false;
-      document.getElementById('stopButton').disabled = true;
-
-      if (!scanner) return Promise.resolve();
-
-      return scanner.stop()
-        .catch(function () {})
-        .then(function () {
-          try { scanner.clear(); } catch (error) {}
-        });
+      const s=STATE.scanner; STATE.scanner=null;
+      document.getElementById('startButton').disabled=false;
+      document.getElementById('stopButton').disabled=true;
+      if (!s) return Promise.resolve();
+      return s.stop().catch(()=>{}).then(()=>{try{s.clear();}catch(ignore){}});
     }
-
-    function scanImageFile(event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file || STATE.busy) return;
-
-      clearMessage();
-      STATE.busy = true;
-
-      stopCamera().finally(function () {
-        const scanner = new Html5Qrcode('reader');
-        scanner.scanFile(file, true)
-          .then(function (decodedText) {
-            try { scanner.clear(); } catch (error) {}
-            showMessage('QR read. Returning to La Vista for validation…', false);
-            returnWithQr(decodedText);
-          })
-          .catch(function (error) {
-            STATE.busy = false;
-            try { scanner.clear(); } catch (clearError) {}
-            showMessage('No readable QR code was found in that image. ' + readableError(error), true);
-          });
-      });
+    async function scanImageFile(event) {
+      const file=event.target.files && event.target.files[0];
+      if (!file || STATE.phase!=='ready' || STATE.busy) return;
+      if (typeof Html5Qrcode==='undefined') { showMessage('QR library did not load.',true); return; }
+      STATE.busy=true; await stopCamera();
+      const reader=new Html5Qrcode('reader');
+      try { const qr=await reader.scanFile(file,true); reader.clear(); submitQr(qr); }
+      catch(error) { STATE.busy=false; try{reader.clear();}catch(ignore){} showMessage('No readable QR found. ' + readableError(error),true); }
     }
-
-    function returnWithQr(qrText) {
-      if (!window.opener) {
-        showMessage('The La Vista app tab is no longer available. Return to the app and open the scanner again.', true);
-        return;
-      }
-
-      STATE.busy = true;
-      stopCamera().catch(function () {});
-
+    function submitQr(text) {
+      if (STATE.phase!=='ready') return;
+      STATE.busy=false; STATE.qrText=String(text || '').trim(); STATE.requestId=requestId(); STATE.phase='validating';
+      document.getElementById('scanControls').hidden=true;
+      retry();
+    }
+    function armTimeout() {
+      clearTimeout(STATE.timeout); STATE.busy=true;
+      document.getElementById('retryButton').hidden=true;
+      STATE.timeout=setTimeout(function() {
+        STATE.busy=false; document.getElementById('retryButton').hidden=false;
+        showMessage('Confirmation is taking longer than expected. Retry the same request; do not start another admission.',true);
+      },45000);
+    }
+    function retry() {
+      if (STATE.phase==='closed' || STATE.busy) return;
+      if (STATE.response && STATE.response.photoRequired && STATE.photo) { uploadPhoto(); return; }
+      if (!STATE.requestId) return;
+      armTimeout(); showMessage('Validating in La Vista…',false);
+      send('LV_SCAN',{requestId:STATE.requestId,qrText:STATE.qrText});
+    }
+    async function startIdCamera() {
+      if (STATE.phase!=='photo' || STATE.busy) return;
+      stopIdCamera();
+      document.getElementById('photoPreview').hidden=true;
+      document.getElementById('uploadPhotoButton').disabled=true;
       try {
-        window.opener.postMessage(
-          {
-            type: 'LV_GATE_SCAN_RESULT',
-            qrText: String(qrText || '').trim(),
-            direction: STATE.direction,
-            stationId: STATE.stationId,
-            stationName: STATE.stationName,
-          },
-          '*'
-        );
-
-        showMessage('QR read successfully. Returning to La Vista…', false);
-
-        // Tabs opened by script are normally allowed to close themselves.
-        window.setTimeout(function () {
-          window.close();
-        }, 350);
-      } catch (error) {
-        STATE.busy = false;
-        showMessage('Unable to return the scan to La Vista. Go back to the La Vista tab and try again.', true);
-      }
+        const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+        if (STATE.phase!=='photo') { stream.getTracks().forEach(t=>t.stop()); return; }
+        STATE.stream=stream;
+        const video=document.getElementById('idVideo'); video.hidden=false; video.srcObject=stream; await video.play();
+        document.getElementById('capturePhotoButton').hidden=false;
+        showMessage('Frame the driver’s ID clearly, then capture the photo.',false);
+      } catch(error) { stopIdCamera(); showMessage('ID photo is required. Allow camera access and try again. ' + readableError(error),true); }
     }
-
-    function returnWithoutScan() {
-      stopCamera().catch(function () {});
-      window.close();
+    function captureIdPhoto() {
+      const video=document.getElementById('idVideo');
+      if (STATE.busy || !STATE.stream || !video.videoWidth || STATE.phase!=='photo') return;
+      const canvas=document.createElement('canvas');
+      const scale=Math.min(1,1600/Math.max(video.videoWidth,video.videoHeight));
+      canvas.width=Math.round(video.videoWidth*scale); canvas.height=Math.round(video.videoHeight*scale);
+      canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+      STATE.photo=canvas.toDataURL('image/jpeg',.88);
+      stopIdCamera();
+      const preview=document.getElementById('photoPreview');preview.src=STATE.photo;preview.hidden=false;
+      document.getElementById('retakePhotoButton').hidden=false;
+      document.getElementById('uploadPhotoButton').disabled=false;
+      showMessage('Review the photo. Make sure the ID is readable before saving.',false);
     }
-
-    function showMessage(text, isError) {
-      const element = document.getElementById('message');
-      element.textContent = String(text || '');
-      element.className = 'message show ' + (isError ? 'error' : 'success');
+    function uploadPhoto() {
+      if (STATE.busy || STATE.phase!=='photo' || !STATE.photo || !STATE.response) return;
+      document.getElementById('uploadPhotoButton').disabled=true;
+      armTimeout();showMessage('Saving ID photo to La Vista…',false);
+      send('LV_PHOTO',{scanId:STATE.response.scanId,photoBase64:STATE.photo.split(',')[1]});
     }
-
-    function clearMessage() {
-      const element = document.getElementById('message');
-      element.textContent = '';
-      element.className = 'message';
+    function stopIdCamera() {
+      if (STATE.stream) STATE.stream.getTracks().forEach(t=>t.stop()); STATE.stream=null;
+      const video=document.getElementById('idVideo');video.srcObject=null;video.hidden=true;
+      document.getElementById('capturePhotoButton').hidden=true;
     }
-
-    function readableError(error) {
-      if (!error) return '';
-      if (typeof error === 'string') return error;
-      return String(error.message || error.name || error);
-    }
+    function stopAll() { stopCamera(); stopIdCamera(); clearTimeout(STATE.timeout); clearInterval(STATE.cooldown); }
+    function showMessage(text,error) { const el=document.getElementById('message');el.textContent=String(text||'');el.className='message show ' + (error?'error':'success'); }
+    function readableError(error) { return String(error && (error.message||error.name) || error || ''); }
   </script>
+
 </body>
 </html>
+
