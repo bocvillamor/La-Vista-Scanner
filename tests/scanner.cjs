@@ -1,36 +1,35 @@
-/* Offline protocol/state test, not a substitute for phone camera testing. */
-const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict'),crypto=require('node:crypto');
+/* Foreground POST transport and camera-state regressions. No browser opener. */
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
 const html=fs.readFileSync(path.join(__dirname,'..','index.html'),'utf8');
 const source=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m=>m[1]).join('\n');
-const nodes=new Map(),messages=[],timers=new Map();let serial=0,decode;
-function node(id){if(!nodes.has(id))nodes.set(id,{hidden:false,disabled:false,textContent:'',classList:{toggle(){}},removeAttribute(k){delete this[k];},play:async()=>{},getContext:()=>({drawImage(){}})});return nodes.get(id);}
-const opener={postMessage:(data,origin)=>messages.push({data,origin})},origin='https://test-script.googleusercontent.com',launch='a'.repeat(48);
-const ctx=vm.createContext({console,URLSearchParams,crypto:crypto.webcrypto,Uint8Array,
-  setTimeout:fn=>{timers.set(++serial,fn);return serial;},clearTimeout:id=>timers.delete(id),setInterval:fn=>++serial,clearInterval(){},
-  location:{hash:'#'+new URLSearchParams({openerOrigin:origin,launchId:launch}),pathname:'/scanner/',search:''},history:{replaceState(){}},
-  window:{opener,addEventListener(){},close(){}},document:{addEventListener(){},getElementById:node,createElement:node},navigator:{mediaDevices:{}},
-  Html5Qrcode:class {start(a,b,cb){decode=cb;return Promise.resolve();}stop(){return Promise.resolve();}clear(){}scanFile(){return Promise.resolve('LVQR1:photo-file-qr');}}
-});
-vm.runInContext(source,ctx);const state=()=>vm.runInContext('STATE',ctx);
-const receive=(data,opts={})=>ctx.receive({source:opener,origin,data:{launchId:launch,...data},...opts});
+const base={handoff:'a'.repeat(64),endpoint:'https://script.google.com/macros/s/STAGING/exec',requestId:'b'.repeat(36),mode:'scan',direction:'ENTRY',stationName:'Mangyan Gate',expiresAt:Date.now()+1200000};
+function browser(params=base,storage=new Map()) {
+  const nodes=new Map(),posts=[],timers=new Map(),handlers={};let serial=0,decode;
+  function node(id){if(!nodes.has(id))nodes.set(id,{hidden:false,disabled:false,textContent:'',classList:{toggle(){}},removeAttribute(k){delete this[k];},play:async()=>{},getContext:()=>({drawImage(){}})});return nodes.get(id);}
+  const window={addEventListener:(name,fn)=>handlers[name]=fn};Object.defineProperty(window,'opener',{get(){throw Error('Opener access is forbidden');}});
+  const ctx=vm.createContext({console,URLSearchParams,Date,
+    setTimeout:fn=>{timers.set(++serial,fn);return serial;},clearTimeout:id=>timers.delete(id),
+    location:{hash:params?'#'+new URLSearchParams(params):'',pathname:'/scanner/',search:''},history:{replaceState(){}},
+    sessionStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
+    window,document:{body:{appendChild(){}},addEventListener(){},getElementById:node,createElement(tag){if(tag==='form')return {children:[],appendChild(i){this.children.push(i);},submit(){posts.push({method:this.method,target:this.target,url:this.action,fields:Object.fromEntries(this.children.map(i=>[i.name,i.value]))});},remove(){}};return {};}},navigator:{mediaDevices:{}},
+    Html5Qrcode:class {start(a,b,cb){decode=cb;return Promise.resolve();}stop(){return Promise.resolve();}clear(){}scanFile(){return Promise.resolve('LVQR1:file');}}
+  });
+  vm.runInContext(source,ctx);ctx.init();return {ctx,posts,storage,timers,node,handlers,state:()=>vm.runInContext('STATE',ctx),decode:t=>decode(t)};
+}
 (async()=>{
-  ctx.init();assert.equal(messages[0].data.type,'LV_READY');
-  receive({type:'LV_INIT',direction:'ENTRY',stationName:'Bagobo Gate'},{origin:'https://attacker.invalid'});assert.equal(state().phase,'connecting');
-  receive({type:'LV_INIT',direction:'ENTRY',stationName:'Bagobo Gate'},{source:{}});assert.equal(state().phase,'connecting');
-  receive({type:'LV_INIT',direction:'ENTRY',stationName:'Bagobo Gate'});assert.equal(state().phase,'ready');
-  ctx.startCamera();decode('LVQR1:test');await new Promise(setImmediate);
-  const request=messages.at(-1);assert.equal(request.data.type,'LV_SCAN');assert.equal(request.data.qrText,'LVQR1:test');assert.match(request.data.requestId,/^[a-f0-9]{48}$/);assert.equal(request.origin,origin);
-  assert.equal(state().busy,true);for(const fn of [...timers.values()])fn();ctx.retry();assert.equal(messages.at(-1).data.requestId,request.data.requestId);
-  receive({type:'LV_RESPONSE',response:{result:'success',code:'EVENT_PHOTO_REQUIRED',scanId:'SCN1',photoRequired:true}});
-  assert.equal(state().phase,'photo');assert.equal(node('nextButton').hidden,true);assert.equal(node('uploadPhotoButton').disabled,true);
-  const count=messages.length;ctx.submitQr('LVQR1:another');assert.equal(messages.length,count);
-  state().photo='data:image/jpeg;base64,/9j/2Q==';ctx.uploadPhoto();assert.equal(messages.at(-1).data.type,'LV_PHOTO');assert.equal(messages.at(-1).data.scanId,'SCN1');
-  receive({type:'LV_RESPONSE',response:{result:'error',code:'PHOTO_RETRY',scanId:'SCN1',photoRequired:true}});assert.ok(state().photo);assert.equal(state().phase,'photo');
-  ctx.uploadPhoto();receive({type:'LV_RESPONSE',response:{result:'success',code:'VALID_EVENT_ENTRY',scanId:'SCN1',photoRequired:false,repeatUntil:'2000-01-01T00:00:00Z'}});
-  assert.equal(state().phase,'complete');assert.equal(state().photo,null);assert.equal(node('photoPanel').hidden,true);
-  receive({type:'LV_NEXT_READY'});await ctx.scanImageFile({target:{files:[{}]}});assert.equal(messages.at(-1).data.type,'LV_SCAN');assert.equal(messages.at(-1).data.qrText,'LVQR1:photo-file-qr');
-  receive({type:'LV_CANCEL'});const before=messages.length;ctx.submitQr('LVQR1:late');assert.equal(messages.length,before);assert.equal(state().phase,'closed');
-  assert.ok(!JSON.stringify(messages).includes('sessionToken'));
-  for(const match of source.matchAll(/getElementById\('([^']+)'\)/g))assert.ok(html.includes('id="'+match[1]+'"'),'Missing DOM ID '+match[1]);
-  console.log('PASS scanner: origin/source binding, QR camera/file submission, stable retry, mandatory photo, photo retry, next guest, cancel and DOM bindings');
+  const b=browser();assert.equal(b.state().phase,'ready');assert.equal(b.node('stationLabel').textContent,'Mangyan Gate');
+  b.ctx.startCamera();b.decode('LVQR1:test');await new Promise(setImmediate);
+  const post=b.posts[0];assert.equal(post.method,'POST');assert.equal(post.target,'_self');assert.equal(post.url,base.endpoint);assert.equal(post.fields.scanAction,'scan');assert.equal(post.fields.qrPayload,'LVQR1:test');assert.equal(post.fields.requestId,base.requestId);
+  assert.equal(post.fields.sessionToken,undefined);assert.equal(post.fields.direction,undefined);assert.equal(post.fields.stationId,undefined);
+  for(const fn of [...b.timers.values()])fn();b.ctx.retry();assert.deepEqual(b.posts[1].fields,post.fields);
+  const reloaded=browser(null,b.storage);assert.equal(reloaded.state().phase,'validating');reloaded.ctx.retry();assert.deepEqual(reloaded.posts[0].fields,post.fields);
+  const file=browser({...base,requestId:'c'.repeat(36)});await file.ctx.scanImageFile({target:{files:[{}]}});assert.equal(file.posts[0].fields.qrPayload,'LVQR1:file');
+  const photo=browser({...base,mode:'photo'});assert.equal(photo.node('photoPanel').hidden,false);photo.state().photo='data:image/jpeg;base64,/9j/2Q==';photo.ctx.uploadPhoto();assert.equal(photo.posts[0].fields.scanAction,'photo');assert.equal(photo.posts[0].fields.photoBase64,'/9j/2Q==');assert.equal(photo.posts[0].fields.scanId,undefined);
+  assert.ok(![...photo.storage.values()].join('').includes('/9j/2Q=='));
+  const restoredPhoto=browser(null,photo.storage);assert.equal(restoredPhoto.state().phase,'photo');assert.equal(restoredPhoto.state().photo,null);
+  const bad=browser({...base,endpoint:'https://attacker.invalid/exec'});assert.equal(bad.state().phase,'closed');assert.equal(bad.posts.length,0);
+  const expired=browser({...base,expiresAt:1});assert.equal(expired.state().phase,'closed');
+  assert.ok(!source.includes('postMessage'));assert.ok(!source.includes('window.opener'));assert.ok(!source.includes('fetch('));
+  for(const m of source.matchAll(/getElementById\('([^']+)'\)/g))assert.ok(html.includes('id="'+m[1]+'"'),'Missing DOM ID '+m[1]);
+  console.log('PASS scanner: no opener, foreground POST, camera/file QR, same-ID timeout and reload retry, photo POST/recovery, no photo persistence, endpoint/expiry and DOM checks');
 })().catch(e=>{console.error(e);process.exitCode=1;});
