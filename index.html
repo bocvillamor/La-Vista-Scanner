@@ -132,8 +132,7 @@
       margin-top: 18px;
     }
 
-    button,
-    .file-button {
+    button {
       width: 100%;
       min-height: 58px;
       border-radius: 14px;
@@ -158,39 +157,6 @@
     button:disabled {
       opacity: 0.55;
       cursor: default;
-    }
-
-    .divider {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      margin: 22px 0;
-      color: #768398;
-      font-weight: 700;
-    }
-
-    .divider::before,
-    .divider::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: #dbe3ec;
-    }
-
-    .file-label {
-      display: block;
-      font-size: 18px;
-      font-weight: 800;
-      margin-bottom: 9px;
-    }
-
-    input[type="file"] {
-      width: 100%;
-      padding: 14px;
-      border: 1px solid #ccd7e3;
-      border-radius: 14px;
-      background: #fff;
-      font-size: 16px;
     }
 
     .small-note {
@@ -230,11 +196,6 @@
         <button id="stopButton" class="secondary" type="button" disabled>Stop camera</button>
       </div>
 
-      <div class="divider"><span>or</span></div>
-
-      <label class="file-label" for="imageInput">Scan a saved QR image</label>
-      <input id="imageInput" type="file" accept="image/*">
-
       </div>
       <section id="photoPanel" hidden>
         <h2>Take Photo of Driver’s ID</h2>
@@ -244,9 +205,9 @@
         <img id="photoPreview" alt="Driver ID photo preview" hidden>
         <div class="actions">
           <button id="takePhotoButton" class="primary" type="button">Take Photo of Driver’s ID</button>
-          <button id="capturePhotoButton" class="primary" type="button" hidden>Capture photo</button>
-          <button id="retakePhotoButton" class="secondary" type="button" hidden>Retake photo</button>
-          <button id="uploadPhotoButton" class="primary" type="button" disabled>Save ID photo and complete admission</button>
+          <button id="capturePhotoButton" class="primary" type="button" hidden>Capture Photo</button>
+          <button id="retakePhotoButton" class="secondary" type="button" hidden>Retake Photo</button>
+          <button id="uploadPhotoButton" class="primary" type="button" hidden disabled>Save ID photo and complete admission</button>
         </div>
       </section>
       <div class="actions">
@@ -285,7 +246,6 @@
         document.getElementById('mode').classList.toggle('exit',STATE.direction==='EXIT');
         document.getElementById('startButton').onclick=startCamera;
         document.getElementById('stopButton').onclick=stopCamera;
-        document.getElementById('imageInput').onchange=scanImageFile;
         document.getElementById('takePhotoButton').onclick=startIdCamera;
         document.getElementById('capturePhotoButton').onclick=captureIdPhoto;
         document.getElementById('retakePhotoButton').onclick=function(){if(!STATE.busy){STATE.photo=null;startIdCamera();}};
@@ -296,8 +256,8 @@
         window.addEventListener('pageshow',function(e){if(e.persisted){STATE.busy=false;document.getElementById('retryButton').hidden=false;showMessage('Check or retry this same request. Do not start another admission until confirmed.',true);}});
         document.getElementById('scanControls').hidden=STATE.mode!=='scan' || Boolean(STATE.qrText);
         document.getElementById('photoPanel').hidden=STATE.mode!=='photo';
-        if(STATE.mode==='photo') {STATE.phase='photo';document.getElementById('photoScanLabel').textContent='Admission request: '+STATE.requestId;showMessage('Take a clear photo of the driver’s ID, then save it.',false);}
-        else if(STATE.mode==='scan' && !STATE.qrText) {STATE.phase='ready';showMessage('Ready. Tap Start camera or choose a QR image.',false);}
+        if(STATE.mode==='photo') {STATE.phase='photo';setPhotoControls('start');document.getElementById('photoScanLabel').textContent='Admission request: '+STATE.requestId;showMessage('Take a clear photo of the driver’s ID, then save it.',false);}
+        else if(STATE.mode==='scan' && !STATE.qrText) {STATE.phase='ready';showMessage('Ready. Tap Start camera.',false);}
         else {STATE.phase='validating';document.getElementById('retryButton').hidden=false;showMessage('Check or retry the current request.',false);}
       } catch(error) {sessionStorage.removeItem(STORAGE_KEY);STATE.phase='closed';document.getElementById('scanControls').hidden=true;showMessage(readableError(error),true);}
     }
@@ -332,7 +292,7 @@
         stopCamera().then(()=>submitQr(text));
       },function(){}).catch(function(error) {
         STATE.scanner=null; document.getElementById('startButton').disabled=false;
-        document.getElementById('stopButton').disabled=true; showMessage('Camera unavailable. Allow camera access or scan a saved QR image. ' + readableError(error),true);
+        document.getElementById('stopButton').disabled=true; showMessage('Camera unavailable. Allow camera access and try again. ' + readableError(error),true);
       });
     }
     function stopCamera() {
@@ -341,15 +301,6 @@
       document.getElementById('stopButton').disabled=true;
       if (!s) return Promise.resolve();
       return s.stop().catch(()=>{}).then(()=>{try{s.clear();}catch(ignore){}});
-    }
-    async function scanImageFile(event) {
-      const file=event.target.files && event.target.files[0];
-      if (!file || STATE.phase!=='ready' || STATE.busy) return;
-      if (typeof Html5Qrcode==='undefined') { showMessage('QR library did not load.',true); return; }
-      STATE.busy=true; await stopCamera();
-      const reader=new Html5Qrcode('reader');
-      try { const qr=await reader.scanFile(file,true); reader.clear(); submitQr(qr); }
-      catch(error) { STATE.busy=false; try{reader.clear();}catch(ignore){} showMessage('No readable QR found. ' + readableError(error),true); }
     }
     function submitQr(text) {
       if(STATE.phase!=='ready') return;
@@ -364,7 +315,9 @@
     }
     async function startIdCamera() {
       if (STATE.phase!=='photo' || STATE.busy) return;
-      stopIdCamera();
+      if (STATE.photoStarting) return;
+      STATE.photoStarting=true;STATE.photo=null;
+      stopIdCamera();setPhotoControls('starting');
       document.getElementById('photoPreview').hidden=true;
       document.getElementById('uploadPhotoButton').disabled=true;
       try {
@@ -372,9 +325,15 @@
         if (STATE.phase!=='photo') { stream.getTracks().forEach(t=>t.stop()); return; }
         STATE.stream=stream;
         const video=document.getElementById('idVideo'); video.hidden=false; video.srcObject=stream; await video.play();
-        document.getElementById('capturePhotoButton').hidden=false;
+        setPhotoControls('running');
         showMessage('Frame the driver’s ID clearly, then capture the photo.',false);
-      } catch(error) { stopIdCamera(); showMessage('ID photo is required. Allow camera access and try again. ' + readableError(error),true); }
+      } catch(error) { stopIdCamera();setPhotoControls('start'); showMessage('ID photo is required. Allow camera access and try again. ' + readableError(error),true); } finally {STATE.photoStarting=false;}
+    }
+    function setPhotoControls(stage) {
+      document.getElementById('takePhotoButton').hidden=stage!=='start';
+      document.getElementById('capturePhotoButton').hidden=stage!=='running';
+      document.getElementById('retakePhotoButton').hidden=stage!=='captured';
+      document.getElementById('uploadPhotoButton').hidden=stage!=='captured';
     }
     function captureIdPhoto() {
       const video=document.getElementById('idVideo');
@@ -386,7 +345,7 @@
       STATE.photo=canvas.toDataURL('image/jpeg',.88);
       stopIdCamera();
       const preview=document.getElementById('photoPreview');preview.src=STATE.photo;preview.hidden=false;
-      document.getElementById('retakePhotoButton').hidden=false;
+      setPhotoControls('captured');
       document.getElementById('uploadPhotoButton').disabled=false;
       showMessage('Review the photo. Make sure the ID is readable before saving.',false);
     }
