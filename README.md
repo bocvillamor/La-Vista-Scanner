@@ -16,9 +16,9 @@ The URL fragment is removed after initialization. Only the short-lived capabilit
 
 1. In La Vista, tap Entry/Exit Scanner, then Continue to scanner.
 2. Tap Start camera. QR scanning is camera-only. After decode the scanner submits the stable server-issued request ID by POST and navigates to the foreground result.
-3. For Event admission, tap Take Photo of Driver’s ID on the result page, capture/review a synthetic ID in the camera tab, and save. The server associates it with its pending scan; callers cannot choose another scan ID.
-4. After a completed admission, tap Next guest / QR. Its server-issued successor request is accepted only after the repeat interval. The Event pass remains reusable and every guest needs its own photo.
-5. If navigation/network fails, use browser Back/reload and Retry same request, or Check current request. Never manually start a new admission while the outcome is unknown. If a photo page is discarded, retake the photo for the same pending admission.
+3. For Event admission, tap Take Photo of Driver’s ID on the result page, optionally capture/review a synthetic ID in the camera tab, and save. New Event guests are already admitted; skipping or failing the optional photo does not undo admission. Legacy pending admissions retain required-photo instructions and recovery. The App supplies a presentation-only photoOptional flag; backend authorization and scan association remain server-controlled. The server associates it with its pending scan; callers cannot choose another scan ID.
+4. After a completed admission, tap Next guest / QR. Its server-issued successor request is accepted only after the repeat interval. The Event pass remains reusable and each optional photo attaches only to its own admission.
+5. If navigation/network fails, use browser Back/reload and Retry same request, or Check current request. Never manually start a new admission while the outcome is unknown. If a photo page is discarded, retake for the same admission while its scanner session is available. Only legacy required-photo admissions must be completed before moving on.
 6. Result links/forms open new foreground tabs to respect bound Apps Script HtmlService sandbox restrictions. Older tabs can be closed; they are not relays. A stale page cannot submit a different QR or advance an admission.
 
 ## Staging preparation after deployment approval

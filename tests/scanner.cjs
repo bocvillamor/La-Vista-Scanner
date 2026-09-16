@@ -31,9 +31,22 @@ function browser(params=base,storage=new Map()) {
   await photo.ctx.startIdCamera();assert.equal(photo.node('retakePhotoButton').hidden,true);assert.equal(photo.node('uploadPhotoButton').hidden,true);photo.ctx.captureIdPhoto();photo.ctx.uploadPhoto();assert.equal(photo.posts[0].fields.scanAction,'photo');assert.equal(photo.posts[0].fields.photoBase64,'/9j/2Q==');assert.equal(photo.posts[0].fields.scanId,undefined);
   assert.ok(![...photo.storage.values()].join('').includes('/9j/2Q=='));
   const restoredPhoto=browser(null,photo.storage);assert.equal(restoredPhoto.state().phase,'photo');assert.equal(restoredPhoto.state().photo,null);
+  for(const optional of [false,true]){
+    const state=browser({...base,mode:'photo',photoOptional:optional?'1':'0'});
+    assert.equal(state.node('photoTitle').textContent,'Take Photo of Driver’s ID'+(optional?' (Optional)':''));
+    assert.equal(state.node('uploadPhotoButton').textContent,optional?'Save optional ID photo':'Save ID photo and complete admission');
+    assert.match(state.node('workflowNote').textContent,optional?/does not affect the recorded admission/:/legacy admission incomplete/);
+    state.ctx.navigator.mediaDevices.getUserMedia=async()=>{throw Error('Camera blocked');};await state.ctx.startIdCamera();
+    assert.match(state.node('message').textContent,optional?/Admission is already recorded.*optional photo/:/ID photo is required/);
+    if(optional)assert.ok(!state.node('message').textContent.includes('required'));
+    state.state().photo='data:image/jpeg;base64,/9j/2Q==';state.ctx.uploadPhoto();
+    assert.equal(state.posts[0].fields.scanAction,'photo');assert.equal(state.posts[0].fields.photoOptional,undefined);
+    for(const fn of [...state.timers.values()])fn();if(optional)assert.match(state.node('message').textContent,/Admission is already recorded.*optional photo/);
+    const reloaded=browser(null,state.storage);assert.equal(reloaded.state().photoOptional,optional);assert.equal(reloaded.state().photo,null);assert.equal(reloaded.node('photoTitle').textContent,state.node('photoTitle').textContent);
+  }
   const bad=browser({...base,endpoint:'https://attacker.invalid/exec'});assert.equal(bad.state().phase,'closed');assert.equal(bad.posts.length,0);
   const expired=browser({...base,expiresAt:1});assert.equal(expired.state().phase,'closed');
   assert.ok(!source.includes('postMessage'));assert.ok(!source.includes('window.opener'));assert.ok(!source.includes('fetch('));
   for(const m of source.matchAll(/getElementById\('([^']+)'\)/g))assert.ok(html.includes('id="'+m[1]+'"'),'Missing DOM ID '+m[1]);
-  console.log('PASS scanner: no opener, foreground POST, camera-only QR, same-ID timeout and reload retry, photo controls/retake/POST/recovery, no photo persistence, endpoint/expiry and DOM checks');
+  console.log('PASS scanner: no opener, foreground POST, camera-only QR, same-ID timeout and reload retry, optional/legacy photo wording, controls/retake/POST/recovery, no photo persistence, endpoint/expiry and DOM checks');
 })().catch(e=>{console.error(e);process.exitCode=1;});

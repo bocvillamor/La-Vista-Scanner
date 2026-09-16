@@ -198,9 +198,9 @@
 
       </div>
       <section id="photoPanel" hidden>
-        <h2>Take Photo of Driver’s ID</h2>
+        <h2 id="photoTitle">Take Photo of Driver’s ID</h2>
         <p id="photoScanLabel"></p>
-        <p>Required for this Event guest. The photo is stored privately for 60 days.</p>
+        <p id="photoInstructions"></p>
         <video id="idVideo" playsinline muted hidden></video>
         <img id="photoPreview" alt="Driver ID photo preview" hidden>
         <div class="actions">
@@ -216,8 +216,8 @@
         <button id="backButton" class="secondary" type="button">Check current request</button>
       </div>
 
-      <p class="small-note">
-        QR validation and admission records remain in La Vista. Event admissions also require a driver ID photo. Closing this page before saving leaves the admission incomplete; reopen it from the dashboard to resume.
+      <p class="small-note" id="workflowNote">
+        QR validation and admission records remain in La Vista. Check the current request before starting another admission.
       </p>
     </section>
   </main>
@@ -237,7 +237,7 @@
           !/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(data.endpoint || '') ||
           !/^[a-zA-Z0-9_-]{20,100}$/.test(data.requestId || '') || Date.now()>=Number(data.expiresAt || 0)) throw Error('Scanner session is missing or expired. Reopen from La Vista.');
         Object.assign(STATE,{handoff:data.handoff,endpoint:data.endpoint,requestId:data.requestId,
-          mode:data.mode,direction:data.direction,stationName:data.stationName,expiresAt:Number(data.expiresAt),qrText:data.qrText || ''});
+          mode:data.mode,photoOptional:data.photoOptional==='1',direction:data.direction,stationName:data.stationName,expiresAt:Number(data.expiresAt),qrText:data.qrText || ''});
         persistRequest();history.replaceState(null,'',location.pathname + location.search);
         document.getElementById('title').textContent=STATE.direction==='EXIT'?'Exit Scanner':'Entry Scanner';
         document.getElementById('stationLabel').textContent=STATE.stationName;
@@ -253,32 +253,48 @@
         document.getElementById('retryButton').onclick=retry;
         document.getElementById('backButton').onclick=function(){submitForeground('resume');};
         window.addEventListener('pagehide',stopAll);
-        window.addEventListener('pageshow',function(e){if(e.persisted){STATE.busy=false;document.getElementById('retryButton').hidden=false;showMessage('Check or retry this same request. Do not start another admission until confirmed.',true);}});
+        window.addEventListener('pageshow',function(e){if(e.persisted){STATE.busy=false;document.getElementById('retryButton').hidden=false;showMessage(photoFailureMessage('Check or retry this same request. Do not start another admission until confirmed.'),true);}});
         document.getElementById('scanControls').hidden=STATE.mode!=='scan' || Boolean(STATE.qrText);
         document.getElementById('photoPanel').hidden=STATE.mode!=='photo';
-        if(STATE.mode==='photo') {STATE.phase='photo';setPhotoControls('start');document.getElementById('photoScanLabel').textContent='Admission request: '+STATE.requestId;showMessage('Take a clear photo of the driver’s ID, then save it.',false);}
+        if(STATE.mode==='photo') {renderPhotoInstructions();STATE.phase='photo';setPhotoControls('start');document.getElementById('photoScanLabel').textContent='Admission request: '+STATE.requestId;showMessage(STATE.photoOptional?'Admission is already recorded. You may attach an optional ID photo or return without one.':'This legacy admission still requires a driver ID photo to complete it.',false);}
         else if(STATE.mode==='scan' && !STATE.qrText) {STATE.phase='ready';showMessage('Ready. Tap Start camera.',false);}
         else {STATE.phase='validating';document.getElementById('retryButton').hidden=false;showMessage('Check or retry the current request.',false);}
       } catch(error) {sessionStorage.removeItem(STORAGE_KEY);STATE.phase='closed';document.getElementById('scanControls').hidden=true;showMessage(readableError(error),true);}
     }
+    function renderPhotoInstructions() {
+      const title='Take Photo of Driver’s ID'+(STATE.photoOptional?' (Optional)':'');
+      document.getElementById('photoTitle').textContent=title;
+      document.getElementById('takePhotoButton').textContent=title;
+      document.getElementById('photoInstructions').textContent=STATE.photoOptional
+        ? 'Admission is already recorded. This photo is optional and will be stored privately for 60 days.'
+        : 'Required for this legacy pending Event admission. The photo is stored privately for 60 days.';
+      document.getElementById('uploadPhotoButton').textContent=STATE.photoOptional?'Save optional ID photo':'Save ID photo and complete admission';
+      document.getElementById('workflowNote').textContent=STATE.photoOptional
+        ? 'Leaving without a photo does not affect the recorded admission. Check current request to return to the result.'
+        : 'Closing before saving leaves this legacy admission incomplete; reopen it from the dashboard to resume.';
+    }
+    function photoFailureMessage(message) {
+      return STATE.mode==='photo' && STATE.photoOptional
+        ? 'Admission is already recorded. Only the optional photo was not confirmed. '+message : message;
+    }
     function persistRequest() {
       // Short-lived scanner capability + pending QR only; never app token or ID photo.
       sessionStorage.setItem(STORAGE_KEY,JSON.stringify({handoff:STATE.handoff,endpoint:STATE.endpoint,
-        requestId:STATE.requestId,mode:STATE.mode,direction:STATE.direction,stationName:STATE.stationName,
+        requestId:STATE.requestId,mode:STATE.mode,photoOptional:STATE.photoOptional?'1':'0',direction:STATE.direction,stationName:STATE.stationName,
         expiresAt:STATE.expiresAt,qrText:STATE.qrText}));
     }
     function submitForeground(action,extra) {
       if(STATE.busy || STATE.phase==='closed') return;
-      if(Date.now()>=STATE.expiresAt){showMessage('Scanner session expired. Reopen from La Vista and review the pending admission.',true);return;}
+      if(Date.now()>=STATE.expiresAt){showMessage(STATE.mode==='photo' && STATE.photoOptional?'Admission is already recorded. The optional-photo session expired; return to La Vista.':'Scanner session expired. Reopen from La Vista and review the pending admission.',true);return;}
       // Normal top-level form navigation: no CORS, fetch, iframe relay or opener.
       const form=document.createElement('form');form.method='POST';form.action=STATE.endpoint;form.target='_self';
       const fields=Object.assign({handoff:STATE.handoff,requestId:STATE.requestId,scanAction:action},extra || {});
       Object.keys(fields).forEach(function(name){const input=document.createElement('input');input.type='hidden';input.name=name;input.value=fields[name];form.appendChild(input);});
       document.body.appendChild(form);STATE.busy=true;
       document.getElementById('retryButton').hidden=true;
-      clearTimeout(STATE.timeout);STATE.timeout=setTimeout(function(){STATE.busy=false;document.getElementById('retryButton').hidden=false;showMessage('Navigation was not confirmed. Retry the same request or Check current request; do not admit again.',true);},45000);
+      clearTimeout(STATE.timeout);STATE.timeout=setTimeout(function(){STATE.busy=false;document.getElementById('retryButton').hidden=false;showMessage(photoFailureMessage('Navigation was not confirmed. Retry the same request or Check current request; do not admit again.'),true);},45000);
       showMessage(action==='photo'?'Saving ID photo in La Vista…':'Opening La Vista to confirm this request…',false);
-      try {form.submit();} catch(error){STATE.busy=false;document.getElementById('retryButton').hidden=false;showMessage('Submission could not start. Retry the same request. '+readableError(error),true);} finally {form.remove();}
+      try {form.submit();} catch(error){STATE.busy=false;document.getElementById('retryButton').hidden=false;showMessage(photoFailureMessage('Submission could not start. Retry the same request. '+readableError(error)),true);} finally {form.remove();}
     }
     function startCamera() {
       if (STATE.phase!=='ready' || STATE.busy || STATE.scanner) return;
@@ -327,7 +343,7 @@
         const video=document.getElementById('idVideo'); video.hidden=false; video.srcObject=stream; await video.play();
         setPhotoControls('running');
         showMessage('Frame the driver’s ID clearly, then capture the photo.',false);
-      } catch(error) { stopIdCamera();setPhotoControls('start'); showMessage('ID photo is required. Allow camera access and try again. ' + readableError(error),true); } finally {STATE.photoStarting=false;}
+      } catch(error) { stopIdCamera();setPhotoControls('start'); showMessage(photoFailureMessage((STATE.photoOptional?'Allow camera access to take the optional photo, or return without it. ':'ID photo is required. Allow camera access and try again. ') + readableError(error)),true); } finally {STATE.photoStarting=false;}
     }
     function setPhotoControls(stage) {
       document.getElementById('takePhotoButton').hidden=stage!=='start';
